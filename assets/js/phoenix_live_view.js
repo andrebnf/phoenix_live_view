@@ -435,6 +435,24 @@ export class LiveSocket {
       }, false)
     }
   }
+
+  bindGesture() {
+    window.addEventListener("mousemove", e => {
+      let phxEvent = e.target.getAttribute(this.binding("mousemove"))
+      // todo
+      // e.clientX - aBox.offsetLeft 
+      // e.clientY - aBox.offsetTop
+      this.owner(target, view => view.pushEvent("mousemove", target, phxEvent))
+    }, false)
+
+    window.addEventListener("touchmove", e => {
+      let phxEvent = e.target.getAttribute(this.binding("touchmove"))
+      // todo
+      // e.changedTouches[0].clientX - e.target.offsetLeft
+      // e.changedTouches[0].clientY - e.target.offsetTop
+      this.owner(target, view => view.pushEvent("touchmove", target, phxEvent))
+    }, false)
+  }
 }
 
 export let Browser = {
