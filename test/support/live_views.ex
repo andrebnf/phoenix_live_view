@@ -166,3 +166,26 @@ defmodule Phoenix.LiveViewTest.DashboardLive do
     {:ok, assign(socket, router_session: session)}
   end
 end
+
+defmodule Phoenix.LiveViewTest.MouseTrack do
+  use Phoenix.LiveView
+
+  def render(assigns) do
+    ~L"""
+    Move the mouse on the area below
+    <div style="height: 200px; width: 200px; border: 1px solid black;" phx-gesture="track">
+    </div>
+    <p>
+      current gesture position on screen: @position
+    </p>
+    """
+  end
+
+  def mount(_session, socket) do
+    {:ok, assign(socket, position: 0)}
+  end
+
+  def handle_event("track", gesture_data, socket) do
+    {:noreply, update(socket, :position, &(&1 + 1))}
+  end
+end
