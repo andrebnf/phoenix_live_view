@@ -130,6 +130,7 @@ const PHX_BOUND = "data-phx-bound"
 const FOCUSABLE_INPUTS = ["text", "textarea", "number", "email", "password", "search", "tel", "url"]
 const PHX_HAS_SUBMITTED = "data-phx-has-submitted"
 const PHX_SESSION = "data-phx-session"
+const PHX_STATIC = "data-phx-static"
 const PHX_READONLY = "data-phx-readonly"
 const PHX_DISABLED = "data-phx-disabled"
 const PHX_DISABLE_WITH = "disable-with"
@@ -180,6 +181,13 @@ let recursiveMerge = (target, source) => {
     }
   }
 }
+
+let Session = {
+  get(el){ return el.getAttribute(PHX_SESSION) },
+
+  isEqual(el1, el2){ return this.get(el1) === this.get(el2) }
+}
+
 
 export let Rendered = {
   mergeDiff(source, diff){
@@ -254,6 +262,9 @@ export class LiveSocket {
     this.viewLogger = opts.viewLogger
     this.activeElement = null
     this.prevActive = null
+    this.prevInput = null
+    this.prevValue = null
+    this.silenced = false
     this.bindTopLevelEvents()
   }
 
@@ -366,22 +377,30 @@ export class LiveSocket {
   bindTopLevelEvents(){
     this.bindClicks()
     this.bindForms()
-    this.bindTargetable(["keyup", "keydown"], (e, type, view, target, phxEvent, phxTarget) => {
+    this.bindTargetable({keyup: "keyup", keydown: "keydown"}, (e, type, view, target, phxEvent, phxTarget) => {
       view.pushKey(target, type, e, phxEvent)
     })
-    this.bindTargetable(["blur", "focus"], (e, type, view, targetEl, phxEvent, phxTarget) => {
-      // blur and focus are triggered on document and window. Discard one to avoid dups
-      if(!(phxTarget === "window" && e.target !== window) && e.target !== document){
+    this.bindTargetable({blur: "focusout", focus: "focusin"}, (e, type, view, targetEl, phxEvent, phxTarget) => {
+      if(!phxTarget){
         view.pushEvent(type, targetEl, phxEvent)
       }
     })
+    this.bindTargetable({blur: "blur", focus: "focus"}, (e, type, view, targetEl, phxEvent, phxTarget) => {
+      // blur and focus are triggered on document and window. Discard one to avoid dups
+      if(phxTarget && !phxTarget !== "window"){
+        view.pushEvent(type, targetEl, phxEvent)
+      }
+    })
+
   }
 
   // private
 
   bindTargetable(events, callback){
-    for(let event of events){
-      window.addEventListener(event, e => {
+    for(let event in events){
+      let browserEventName = events[event]
+
+      this.on(browserEventName, e => {
         let binding = this.binding(event)
         let bindTarget = this.binding("target")
         let targetPhxEvent = e.target.getAttribute && e.target.getAttribute(binding)
@@ -393,7 +412,7 @@ export class LiveSocket {
             this.owner(el, view => callback(e, event, view, el, phxEvent, "window"))
           })
         }
-      }, false)
+      })
     }
   }
 
@@ -409,7 +428,7 @@ export class LiveSocket {
   }
 
   bindForms(){
-    window.addEventListener("submit", e => {
+    this.on("submit", e => {
       let phxEvent = e.target.getAttribute(this.binding("submit"))
       if(!phxEvent){ return }
       e.preventDefault()
@@ -418,10 +437,13 @@ export class LiveSocket {
     }, false)
 
     for(let type of ["change", "input"]){
-      window.addEventListener(type, e => {
+      this.on(type, e => {
         let input = e.target
-        if(type === "input" && ["checkbox", "radio", "select-one", "select-multiple"].includes(input.type)){ return }
+        let key = input.type === "checkbox" ? "checked" : "value"
+        if(this.prevInput === input && this.prevValue === input[key]){ return }
 
+        this.prevInput = input
+        this.prevValue = input[key]
         let phxEvent = input.form && input.form.getAttribute(this.binding("change"))
         if(!phxEvent){ return }
         this.owner(input, view => {
@@ -452,6 +474,18 @@ export class LiveSocket {
       // e.changedTouches[0].clientY - e.target.offsetTop
       this.owner(target, view => view.pushEvent("touchmove", target, phxEvent))
     }, false)
+  }
+
+  silenceEvents(callback){
+    this.silenced = true
+    callback()
+    this.silenced = false
+  }
+
+  on(event, callback){
+    window.addEventListener(event, e => {
+      if(!this.silenced){ callback(e) }
+    })
   }
 }
 
@@ -549,7 +583,7 @@ let DOM = {
       onNodeAdded: function(el){
         // nested view handling
         if(DOM.isPhxChild(el) && view.ownsElement(el)){
-          view.onNewChildAdded(el)
+          view.onNewChildAdded()
           return true
         }
       },
@@ -563,7 +597,14 @@ let DOM = {
       onBeforeElUpdated: function(fromEl, toEl) {
         // nested view handling
         if(DOM.isPhxChild(toEl)){
+          let prevStatic = fromEl.getAttribute(PHX_STATIC)
+
+          if(!Session.isEqual(toEl, fromEl)){
+            view.liveSocket.destroyViewById(fromEl.id)
+            view.onNewChildAdded()
+          }
           DOM.mergeAttrs(fromEl, toEl)
+          fromEl.setAttribute(PHX_STATIC, prevStatic)
           return false
         }
 
@@ -585,7 +626,9 @@ let DOM = {
       }
     })
 
-    DOM.restoreFocus(focused, selectionStart, selectionEnd)
+    view.liveSocket.silenceEvents(() => {
+      DOM.restoreFocus(focused, selectionStart, selectionEnd)
+    })
     document.dispatchEvent(new Event("phx:update"))
   },
 
@@ -626,14 +669,17 @@ export class View {
     this.id = this.el.id
     this.view = this.el.getAttribute(PHX_VIEW)
     this.channel = this.liveSocket.channel(`lv:${this.id}`, () => {
-      return {session: this.getSession()}
+      return {session: this.getSession(), static: this.getStatic()}
     })
     this.loaderTimer = setTimeout(() => this.showLoader(), LOADER_TIMEOUT)
     this.bindChannel()
   }
 
-  getSession(){
-    return this.el.getAttribute(PHX_SESSION)
+  getSession(){ return Session.get(this.el) }
+
+  getStatic(){
+    let val = this.el.getAttribute(PHX_STATIC)
+    return val === "" ? null : val
   }
 
   destroy(callback = function(){}){
@@ -695,7 +741,7 @@ export class View {
     if(this.newChildrenAdded){ this.joinNewChildren() }
   }
 
-  onNewChildAdded(el){
+  onNewChildAdded(){
     this.newChildrenAdded = true
   }
 
